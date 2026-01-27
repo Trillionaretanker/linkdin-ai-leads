@@ -5,10 +5,7 @@ import time
 import random
 import google.generativeai as genai
 
-# =========================
-# PATH CONFIG
-# =========================
-
+# ================= PATHS =================
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
@@ -18,105 +15,109 @@ DATA_DIR.mkdir(exist_ok=True)
 INPUT_CSV = DATA_DIR / "enriched_leads.csv"
 OUTPUT_CSV = DATA_DIR / "ai_messages.csv"
 
-# =========================
-# API CONFIG
-# =========================
-
+# ================= API =================
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    print("❌ Error: GEMINI_API_KEY environment variable not set.")
+    print("❌ GEMINI_API_KEY not set")
     exit(1)
 
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# =========================
-# VARIATION CONTROLS
-# =========================
-
+# ================= VARIATION =================
 OPENING_STYLES = [
     "casual professional",
-    "curious and thoughtful",
     "friendly and conversational",
+    "curious and thoughtful",
     "straightforward and polite",
     "warm and respectful"
 ]
 
 MESSAGE_PATTERNS = [
-    "a short professional networking intro",
-    "a simple hello and interest in connecting",
-    "express curiosity about their background",
-    "a polite reach-out without context",
-    "a light and natural connection opener"
+    "light professional intro",
+    "short networking hello",
+    "curiosity-driven opener",
+    "simple connection request",
+    "natural relationship opener"
 ]
 
-# =========================
-# PROMPT BUILDER
-# =========================
+# ================= HELPERS =================
+def load_existing_urls(path):
+    if not path.exists():
+        return set()
+    urls = set()
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            urls.add(row["profile_url"])
+    return urls
 
 def build_prompt(name, headline, style, pattern):
-    base_rules = (
+    base = (
         "Write a LinkedIn connection message. "
-        "Do not sell anything. "
-        "Do not mention sales, tools, automation, or AI. "
-        "Sound like a real human. "
-        "Maximum 2 sentences. "
-        "Avoid generic phrases like "
-        "'came across your profile' or 'would love to connect'."
+        "No selling. No tools. No automation. "
+        "Sound human. Max 2 sentences. "
+        "Avoid phrases like 'came across your profile'. "
     )
 
-    identity = f"Address the person as {name}. " if name and name != "N/A" else ""
-    role_ref = f"Lightly reference their work or role: {headline}. " if headline and headline != "N/A" else ""
+    n = f"Address them as {name}. " if name != "N/A" else ""
+    h = f"Lightly reference their role: {headline}. " if headline != "N/A" else ""
 
-    return (
-        f"{base_rules} "
-        f"{identity}"
-        f"{role_ref}"
-        f"Tone: {style}. "
-        f"Pattern: {pattern}."
-    )
+    return f"{base}{n}{h}Tone: {style}. Pattern: {pattern}."
 
-# =========================
-# MAIN
-# =========================
-
+# ================= START =================
 print("AI MESSAGE GENERATOR STARTED")
 
 if not INPUT_CSV.exists():
-    print(f"❌ Input file not found: {INPUT_CSV}")
+    print("❌ enriched_leads.csv not found")
     exit(1)
 
-rows = []
+# Load enriched leads
 with open(INPUT_CSV, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        rows.append(row)
+    enriched_rows = list(csv.DictReader(f))
 
-print(f"Loaded {len(rows)} leads")
+print(f"Total enriched leads: {len(enriched_rows)}")
+
+# Load already messaged profiles
+processed_urls = load_existing_urls(OUTPUT_CSV)
+print(f"Messages already generated: {len(processed_urls)}")
+
+# Filter only new leads
+new_leads = [
+    row for row in enriched_rows
+    if row["profile_url"] not in processed_urls
+]
+
+print(f"New messages to generate today: {len(new_leads)}")
+
+if not new_leads:
+    print("Nothing new to process. Exiting.")
+    exit(0)
 
 results = []
 
-for idx, row in enumerate(rows, start=1):
-    name = row.get("name", "N/A")
-    headline = row.get("headline", "N/A")
-    url = row.get("profile_url")
+# ================= GENERATE =================
+for idx, row in enumerate(new_leads, start=1):
+    name = row["name"]
+    headline = row["headline"]
+    url = row["profile_url"]
 
-    print(f"[{idx}/{len(rows)}] Generating message")
+    print(f"[{idx}/{len(new_leads)}] Generating message")
 
-    style = random.choice(OPENING_STYLES)
-    pattern = random.choice(MESSAGE_PATTERNS)
-    prompt = build_prompt(name, headline, style, pattern)
+    prompt = build_prompt(
+        name,
+        headline,
+        random.choice(OPENING_STYLES),
+        random.choice(MESSAGE_PATTERNS)
+    )
 
     try:
         response = model.generate_content(
             prompt,
-            generation_config={
-                "temperature": 0.9,
-                "top_p": 0.9
-            }
+            generation_config={"temperature": 0.9, "top_p": 0.9}
         )
         message = response.text.strip()
-    except Exception:
+    except:
         message = "Hello, hope you're doing well. Happy to connect here."
 
     results.append({
@@ -124,15 +125,19 @@ for idx, row in enumerate(rows, start=1):
         "personalized_message": message
     })
 
-    time.sleep(1)  # rate safety
+    time.sleep(1)
 
-with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+# ================= APPEND =================
+file_exists = OUTPUT_CSV.exists()
+
+with open(OUTPUT_CSV, "a", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
         fieldnames=["profile_url", "personalized_message"]
     )
-    writer.writeheader()
+    if not file_exists:
+        writer.writeheader()
     writer.writerows(results)
 
-print(f"\n✅ Saved {len(results)} messages → {OUTPUT_CSV}")
+print(f"\n✅ Added {len(results)} new messages → {OUTPUT_CSV}")
 print("AI MESSAGE GENERATOR FINISHED")

@@ -1,112 +1,106 @@
 from pathlib import Path
 import csv
 
-# =========================
-# PATH CONFIG
-# =========================
-
+# ================= PATHS =================
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR
 
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
-ENRICHED_CSV = DATA_DIR / "enriched_leads.csv"
 AI_MESSAGES_CSV = DATA_DIR / "ai_messages.csv"
 ICP_CSV = DATA_DIR / "icp_scored_leads.csv"
-
 OUTPUT_CSV = DATA_DIR / "final_outreach.csv"
 
-# =========================
-# LOAD DATA
-# =========================
+# ================= HELPERS =================
+def load_existing_urls(path):
+    if not path.exists():
+        return set()
+    urls = set()
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            urls.add(row["profile_url"])
+    return urls
 
+def tone_from_stars(stars):
+    return {
+        "⭐⭐⭐⭐⭐": "Direct & confident",
+        "⭐⭐⭐⭐☆": "Curious & value-driven",
+        "⭐⭐⭐☆☆": "Exploratory",
+        "⭐⭐☆☆☆": "Soft networking",
+        "⭐☆☆☆☆": "Passive / optional"
+    }.get(stars, "Neutral")
+
+# ================= START =================
 print("FINAL MERGE STARTED")
 
-for file in [ENRICHED_CSV, AI_MESSAGES_CSV, ICP_CSV]:
-    if not file.exists():
-        print(f"❌ Missing required file: {file}")
-        exit(1)
+if not AI_MESSAGES_CSV.exists() or not ICP_CSV.exists():
+    print("❌ Required input files missing")
+    exit(1)
 
-# ---- Load enriched leads ----
-enriched = {}
-with open(ENRICHED_CSV, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        enriched[row["profile_url"]] = row
-
-# ---- Load AI messages ----
+# Load AI messages
 ai_messages = {}
 with open(AI_MESSAGES_CSV, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
     for row in reader:
         ai_messages[row["profile_url"]] = row["personalized_message"]
 
-# ---- Load ICP scores ----
+# Load ICP data
 icp_data = {}
 with open(ICP_CSV, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
     for row in reader:
-        icp_data[row["profile_url"]] = row
+        icp_data[row["profile_url"]] = {
+            "icp_stars": row["icp_stars"],
+            "confidence_score": row["confidence_score"],
+            "icp_reason": row["icp_reason"]
+        }
 
-# =========================
-# TONE MAPPING
-# =========================
+existing_urls = load_existing_urls(OUTPUT_CSV)
 
-def tone_from_stars(stars):
-    if stars == "⭐⭐⭐⭐⭐":
-        return "Direct & confident"
-    if stars == "⭐⭐⭐⭐☆":
-        return "Curious & value-driven"
-    if stars == "⭐⭐⭐☆☆":
-        return "Exploratory"
-    if stars == "⭐⭐☆☆☆":
-        return "Soft networking"
-    return "Passive / optional"
+new_urls = [
+    url for url in ai_messages
+    if url in icp_data and url not in existing_urls
+]
 
-# =========================
-# MERGE
-# =========================
+print(f"Existing outreach rows: {len(existing_urls)}")
+print(f"New rows to merge today: {len(new_urls)}")
+
+if not new_urls:
+    print("Nothing new to merge. Exiting.")
+    exit(0)
 
 results = []
 
-for url, base in enriched.items():
-    message = ai_messages.get(url, "N/A")
-    icp = icp_data.get(url, {})
-
-    stars = icp.get("icp_stars", "N/A")
-    confidence = icp.get("confidence_score", "N/A")
-    tone = tone_from_stars(stars)
+for url in new_urls:
+    icp = icp_data[url]
+    stars = icp["icp_stars"]
 
     results.append({
         "profile_url": url,
-        "name": base.get("name", "N/A"),
-        "headline": base.get("headline", "N/A"),
         "icp_stars": stars,
-        "confidence_score": confidence,
-        "message_tone": tone,
-        "personalized_message": message
+        "confidence_score": icp["confidence_score"],
+        "message_tone": tone_from_stars(stars),
+        "personalized_message": ai_messages[url]
     })
 
-# =========================
-# WRITE OUTPUT
-# =========================
+file_exists = OUTPUT_CSV.exists()
 
-with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+with open(OUTPUT_CSV, "a", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(
         f,
         fieldnames=[
             "profile_url",
-            "name",
-            "headline",
             "icp_stars",
             "confidence_score",
             "message_tone",
             "personalized_message"
         ]
     )
-    writer.writeheader()
+    if not file_exists:
+        writer.writeheader()
     writer.writerows(results)
 
-print(f"\n✅ FINAL FILE CREATED → {OUTPUT_CSV}")
+print(f"✅ Added {len(results)} rows → {OUTPUT_CSV}")
 print("FINAL MERGE FINISHED")
